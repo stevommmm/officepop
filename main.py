@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 import asyncio
 import ssl
-import base64
 import exchangelib as ex
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate
+
+
+def assurelist(obj):
+    '''Shortcut wrapper for handling the sometimes None `*_recipients` attributes'''
+    if obj == None:
+        return []
+    return obj
 
 
 class o365:
@@ -86,14 +94,18 @@ async def handle_connection(reader, writer):
             _write('+OK')
         elif command == 'PASS':
             if state['username']:
-                state['o365'] = o365(state['username'], params[0])
-                _write('+OK')
+                try:
+                    state['o365'] = o365(state['username'], params[0])
+                    _write('+OK')
+                except Exception as e:
+                    _write('-ERR o365 bounced us')
             else:
                 _write('-ERR Who are you?')
         elif command == 'NOOP':
             _write('+OK')
         elif command == 'QUIT':
             _write('+OK')
+            await writer.drain()
             break
 
         # Are we authenticated?
@@ -103,12 +115,32 @@ async def handle_connection(reader, writer):
         if command == 'STAT':
             _write('+OK {count}', count=state['o365'].unread)
         elif command == 'RETR':
-            msg = state['o365'].inbox_all[int(params[0]) - 1]
-            _write('+OK {size} octets', size=len(msg.text_body))
-            for line in msg.text_body.splitlines():
-                if line.startswith('.'):
-                    line = "." + line # Byte stuff the terminator
-                _rwrite(line)
+            omsg = state['o365'].inbox_all[int(params[0]) - 1]
+
+            message = EmailMessage()
+            message['to'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.to_recipients)])
+            message['cc'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.cc_recipients)])
+            message['bcc'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.bcc_recipients)])
+            message['from'] = formataddr((omsg.sender.name, omsg.sender.email_address))
+            if omsg.reply_to:
+                message['reply-to'] = formataddr((omsg.reply_to.name, omsg.reply_to.email_address))
+            message['date'] = formatdate(omsg.datetime_received.timestamp(), localtime=True)
+            message['subject'] = omsg.subject
+
+            message.set_content(omsg.text_body)
+
+            # handle all attachments
+            for attachment in omsg.attachments:
+                maintype, subtype = attachment.content_type.split('/', 1)
+                message.add_attachment(
+                    attachment.content,
+                    maintype=maintype,
+                    subtype=subtype,
+                    filename=attachment.name)
+
+            raw_msg = message.as_string()
+            _write('+OK {size} octets', size=len(raw_msg))
+            _rwrite(raw_msg)
             _write('.')
         elif command == 'DELE':
             oid = int(params[0])
