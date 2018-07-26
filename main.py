@@ -4,7 +4,8 @@ import ssl
 import exchangelib as ex
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate
-
+from email import policy
+from hashlib import sha256 as _hash
 
 def assurelist(obj):
     '''Shortcut wrapper for handling the sometimes None `*_recipients` attributes'''
@@ -117,7 +118,8 @@ async def handle_connection(reader, writer):
         elif command == 'RETR':
             omsg = state['o365'].inbox_all[int(params[0]) - 1]
 
-            message = EmailMessage()
+            message = EmailMessage(policy=policy.default.clone(linesep='\r\n')) # Use /r/n lin endings
+            message['message-id'] = _hash(omsg.text_body.encode()).hexdigest()
             message['to'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.to_recipients)])
             message['cc'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.cc_recipients)])
             message['bcc'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.bcc_recipients)])
@@ -138,13 +140,17 @@ async def handle_connection(reader, writer):
                     subtype=subtype,
                     filename=attachment.name)
 
-            raw_msg = message.as_string()
-            _write('+OK {size} octets', size=len(raw_msg))
-            _rwrite(raw_msg)
+            _write('+OK {size} octets', size=len(message.get_body().as_string()))
+            _rwrite(message.as_string())
             _write('.')
         elif command == 'DELE':
             oid = int(params[0])
             msg = state['o365'].inbox_all[oid - 1]
+            if isinstance(msg, ex.items.MeetingRequest):
+                if msg.conflicting_meeting_count > 0:
+                    msg.accept()
+                else:
+                    msg.tentatively_accept(body="Meeting conflict, will review")
             msg.is_read = True
             msg.save()
             _write('+OK message {oid} deleted', oid=oid)
