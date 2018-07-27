@@ -140,17 +140,18 @@ async def handle_connection(reader, writer):
                     subtype=subtype,
                     filename=attachment.name)
 
-            _write('+OK {size} octets', size=len(message.get_body().as_string()))
+            _write('+OK message follows')
             _rwrite(message.as_string())
             _write('.')
         elif command == 'DELE':
             oid = int(params[0])
             msg = state['o365'].inbox_all[oid - 1]
             if isinstance(msg, ex.items.MeetingRequest):
-                if msg.conflicting_meeting_count > 0:
-                    msg.accept()
-                else:
-                    msg.tentatively_accept(body="Meeting conflict, will review")
+                if msg.meeting_request_type != 'InformationalUpdate':
+                    if msg.conflicting_meeting_count > 0:
+                        msg.accept()
+                    else:
+                        msg.tentatively_accept(body="Meeting conflict, will review")
             msg.is_read = True
             msg.save()
             _write('+OK message {oid} deleted', oid=oid)
@@ -163,10 +164,10 @@ async def handle_connection(reader, writer):
 
 if __name__ == '__main__':
     sc = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    sc.load_cert_chain('localhost.crt', 'localhost.key')
+    sc.load_cert_chain('/var/run/secrets/server.crt', '/var/run/secrets/server.key')
 
     loop = asyncio.get_event_loop()
-    coro = asyncio.start_server(handle_connection, '127.0.0.1', 9000, ssl=sc, loop=loop)
+    coro = asyncio.start_server(handle_connection, '0.0.0.0', 9000, ssl=sc, loop=loop)
     server = loop.run_until_complete(coro)
 
     print('Serving on {}'.format(server.sockets[0].getsockname()))
