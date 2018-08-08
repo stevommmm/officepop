@@ -6,6 +6,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate
 from email import policy
 from hashlib import sha256 as _hash
+import logging
 
 def assurelist(obj):
     '''Shortcut wrapper for handling the sometimes None `*_recipients` attributes'''
@@ -44,6 +45,15 @@ class o365:
     @property
     def unread(self):
         return self.inbox.unread_count
+
+
+async def _handle_connection(reader, writer):
+    try:
+        await handle_connection(reader, writer)
+    except Exception as e:
+        logging.warning(e)
+        writer.write(b'-ERR Encountered a problem talking to o365\r\n')
+        await writer.drain()
 
 
 async def handle_connection(reader, writer):
@@ -117,9 +127,10 @@ async def handle_connection(reader, writer):
             _write('+OK {count}', count=state['o365'].unread)
         elif command == 'RETR':
             omsg = state['o365'].inbox_all[int(params[0]) - 1]
-
-            message = EmailMessage(policy=policy.default.clone(linesep='\r\n')) # Use /r/n lin endings
-            message['message-id'] = _hash(omsg.text_body.encode()).hexdigest()
+            obody = omsg.text_body if omsg.text_body != None else omsg.body
+            obody = obody if obody != None else ''
+            message = EmailMessage(policy=policy.default.clone(linesep='\r\n', mangle_from_=True)) # Use /r/n lin endings
+            message['message-id'] = _hash(obody.encode()).hexdigest()
             message['to'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.to_recipients)])
             message['cc'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.cc_recipients)])
             message['bcc'] = ', '.join([formataddr((x.name, x.email_address)) for x in assurelist(omsg.bcc_recipients)])
@@ -129,7 +140,7 @@ async def handle_connection(reader, writer):
             message['date'] = formatdate(omsg.datetime_received.timestamp(), localtime=True)
             message['subject'] = omsg.subject
 
-            message.set_content(omsg.text_body)
+            message.set_content(obody)
 
             # handle all attachments
             for attachment in omsg.attachments:
@@ -141,7 +152,7 @@ async def handle_connection(reader, writer):
                     filename=attachment.name)
 
             _write('+OK message follows')
-            _rwrite(message.as_string())
+            _rwrite(message.as_string().replace('\r\n.', '\r\n..'))  # be sure to byte stuff the termination character
             _write('.')
         elif command == 'DELE':
             oid = int(params[0])
@@ -167,7 +178,7 @@ if __name__ == '__main__':
     sc.load_cert_chain('/var/run/secrets/server.crt', '/var/run/secrets/server.key')
 
     loop = asyncio.get_event_loop()
-    coro = asyncio.start_server(handle_connection, '0.0.0.0', 9000, ssl=sc, loop=loop)
+    coro = asyncio.start_server(_handle_connection, '0.0.0.0', 9000, ssl=sc, loop=loop)
     server = loop.run_until_complete(coro)
 
     print('Serving on {}'.format(server.sockets[0].getsockname()))
